@@ -1,0 +1,56 @@
+# =============================================================================
+# ElastAlert2 Rule — Error Spike Detection (SecOps Edition)
+# =============================================================================
+# Triggers an alert when more than 10 ERROR-level log entries appear
+# within a 1-minute sliding window in the security-logs index.
+# =============================================================================
+
+# Human-readable name for this rule (appears in alerts)
+name: "Error Spike Alert"
+
+# Rule type: 'frequency' fires when num_events occur within timeframe
+type: frequency
+
+# Elasticsearch index pattern to monitor (security-logs for SecOps)
+index: security-logs-*
+
+# Threshold: trigger when this many matching events occur…
+num_events: 10
+
+# …within this time window
+timeframe:
+  minutes: 1
+
+# ---------------------------------------------------------------------------
+# Filter: only count documents where log_level is "ERROR"
+# Uses Elasticsearch query DSL format (required by ElastAlert2)
+# ---------------------------------------------------------------------------
+filter:
+  - term:
+      log_level: "ERROR"
+
+# ---------------------------------------------------------------------------
+# Alert actions
+# ---------------------------------------------------------------------------
+
+# 1. Debug alert — writes alert details to ElastAlert2's stdout/log
+#    Useful for development and verifying the rule fires correctly.
+# 2. Command alert — appends a timestamped entry to a local alerts file.
+alert:
+  - debug
+  - command
+
+# Command to execute when the alert fires
+# Writes a human-readable line to the mounted alerts output file
+command:
+  - "sh"
+  - "-c"
+  - "echo \"[$(date -u '+%Y-%m-%dT%H:%M:%SZ')] ERROR SPIKE ALERT: More than 10 ERROR logs detected in the last minute\" >> /opt/elastalert/output/alerts.log"
+
+# Minimum time between re-alerts for the same rule (prevents flooding)
+realert:
+  minutes: 1
+
+# Timestamp field in the Elasticsearch documents
+timestamp_field: "@timestamp"
+timestamp_type: iso

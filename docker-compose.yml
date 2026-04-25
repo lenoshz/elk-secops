@@ -1,0 +1,207 @@
+# =============================================================================
+# ELK Stack SecOps — Log Monitoring, Alerting & Docker Compose
+# =============================================================================
+# Spins up: Elasticsearch, Logstash, Kibana, Filebeat, ElastAlert2,
+# a Python log generator, and a one-shot setup container.
+#
+# Usage:  docker-compose up        (foreground)
+#         docker-compose up -d     (detached)
+#         make secops              (configure SIEM + ML after stack is up)
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Elasticsearch — single-node cluster for development
+  # Security is ENABLED to unlock SIEM Detection Engine + ML features.
+  # TLS is disabled for dev simplicity (HTTP plaintext on port 9200).
+  # ---------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.14
+    container_name: elasticsearch
+    environment:
+      # Run as a single-node cluster (no discovery needed)
+      - discovery.type=single-node
+      # Enable X-Pack security (required for SIEM Detection Engine + ML)
+      - xpack.security.enabled=true
+      # Disable TLS/SSL for dev simplicity (plaintext HTTP)
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      # Bootstrap password for 'elastic' superuser
+      - ELASTIC_PASSWORD=changeme
+      # Limit JVM heap to 1 GB (suitable for dev machines)
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      # Expose REST API on host port 9200
+      - "9200:9200"
+    volumes:
+      # Persist index data across container restarts
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:changeme http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - elk-net
+
+  # ---------------------------------------------------------------------------
+  # Setup — one-shot init container
+  # Waits for Elasticsearch, activates trial license, applies ILM policy,
+  # creates index templates, and pre-creates the elastalert alerts.log file.
+  # ---------------------------------------------------------------------------
+  setup:
+    image: python:3.12.9-slim
+    container_name: elk-setup
+    working_dir: /app
+    volumes:
+      - ./scripts:/app/scripts
+      - ./elasticsearch:/app/elasticsearch
+      - ./elastalert:/app/elastalert
+    environment:
+      - ELASTIC_PASSWORD=changeme
+    # Install requests, run the setup script, then create alerts.log
+    command: >
+      bash -c "
+        pip install --quiet requests &&
+        python scripts/setup_alerts.py &&
+        touch /app/elastalert/alerts.log &&
+        echo '[setup] All done — trial license activated, ILM + templates applied, alerts.log created.'
+      "
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - elk-net
+
+  # ---------------------------------------------------------------------------
+  # Logstash — log processing pipeline
+  # Receives logs from Filebeat, parses with grok + GeoIP,
+  # outputs to both app-logs and security-logs indices.
+  # ---------------------------------------------------------------------------
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.19.14
+    container_name: logstash
+    volumes:
+      # Mount the pipeline configuration
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    ports:
+      # Beats input port (used by Filebeat)
+      - "5044:5044"
+    environment:
+      # Limit JVM heap
+      - "LS_JAVA_OPTS=-Xms512m -Xmx512m"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9600/_node/stats || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - elk-net
+
+  # ---------------------------------------------------------------------------
+  # Kibana — visualization & dashboards
+  # ---------------------------------------------------------------------------
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.19.14
+    container_name: kibana
+    environment:
+      # Point Kibana at the Elasticsearch container
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      # Authenticate as 'elastic' superuser (dev only — use kibana_system in prod)
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=changeme
+    ports:
+      # Expose Kibana UI on host port 5601
+      - "5601:5601"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:changeme http://localhost:5601/api/status || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - elk-net
+
+  # ---------------------------------------------------------------------------
+  # Filebeat — lightweight log shipper
+  # Watches the shared logs directory and forwards to Logstash.
+  # ---------------------------------------------------------------------------
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.19.14
+    container_name: filebeat
+    # --strict.perms=false: allow config file not owned by root (common in dev)
+    command: filebeat -e --strict.perms=false
+    volumes:
+      # Mount Filebeat configuration
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      # Mount the shared log directory
+      - ./logs:/var/log/app:ro
+      # Persist Filebeat registry (track read offsets across restarts)
+      - filebeat-data:/usr/share/filebeat/data
+    depends_on:
+      logstash:
+        condition: service_healthy
+    networks:
+      - elk-net
+
+  # ---------------------------------------------------------------------------
+  # ElastAlert2 — alerting engine
+  # Monitors Elasticsearch indices and fires alerts based on rules.
+  # ---------------------------------------------------------------------------
+  elastalert:
+    image: ghcr.io/jertel/elastalert2/elastalert2:2.29.0
+    container_name: elastalert
+    volumes:
+      # Mount ElastAlert2 main config
+      - ./elastalert/config.yml:/opt/elastalert/config.yaml:ro
+      # Mount alert rules
+      - ./elastalert/rules:/opt/elastalert/rules:ro
+      # Mount alerts output file (pre-created by setup container)
+      - ./elastalert:/opt/elastalert/output
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      setup:
+        condition: service_completed_successfully
+    networks:
+      - elk-net
+
+  # ---------------------------------------------------------------------------
+  # Log Generator — Python service that produces security-enriched logs
+  # Includes attack simulations: brute force, priv escalation, port scans
+  # ---------------------------------------------------------------------------
+  log-generator:
+    image: python:3.12.9-slim
+    container_name: log-generator
+    working_dir: /app
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./logs:/app/logs
+    command: python -u scripts/log_generator.py
+    depends_on:
+      logstash:
+        condition: service_healthy
+    networks:
+      - elk-net
+
+# =============================================================================
+# Named volumes
+# =============================================================================
+volumes:
+  es-data:
+    driver: local
+  filebeat-data:
+    driver: local
+
+# =============================================================================
+# Shared network
+# =============================================================================
+networks:
+  elk-net:
+    driver: bridge

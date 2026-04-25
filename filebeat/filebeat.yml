@@ -1,0 +1,37 @@
+# =============================================================================
+# Filebeat Configuration
+# =============================================================================
+# Lightweight log shipper that watches application log files and forwards
+# them to Logstash for processing.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Inputs: Define which log files to watch
+# ---------------------------------------------------------------------------
+filebeat.inputs:
+  - type: log
+    enabled: true
+    # Path to the application log file (mounted from host ./logs/app.log)
+    paths:
+      - /var/log/app/app.log
+    # Add custom fields to every event
+    fields:
+      source: "log-generator"
+    # Merge custom fields into the top-level event (not under 'fields.*')
+    fields_under_root: true
+
+# ---------------------------------------------------------------------------
+# Output: Send logs to Logstash (not directly to Elasticsearch)
+# ---------------------------------------------------------------------------
+output.logstash:
+  # Logstash Beats input endpoint
+  hosts: ["logstash:5044"]
+
+# Disable Filebeat's built-in ILM — we manage ILM via our own policy
+setup.ilm.enabled: false
+
+# ---------------------------------------------------------------------------
+# Logging: configure Filebeat's own log output
+# ---------------------------------------------------------------------------
+logging.level: info
+logging.to_stderr: true

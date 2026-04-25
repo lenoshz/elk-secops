@@ -1,0 +1,48 @@
+# =============================================================================
+# ElastAlert2 — Main Configuration (SecOps Edition)
+# =============================================================================
+# Connects to Elasticsearch and periodically checks alert rules.
+# Security is enabled — credentials are required.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Elasticsearch connection
+# ---------------------------------------------------------------------------
+# Hostname of the Elasticsearch container (resolved via Docker DNS)
+es_host: elasticsearch
+es_port: 9200
+
+# Authentication — required since xpack.security.enabled=true
+es_username: elastic
+es_password: changeme
+
+# Security is enabled but TLS is disabled for dev simplicity
+use_ssl: False
+verify_certs: False
+
+# ---------------------------------------------------------------------------
+# ElastAlert2 internal settings
+# ---------------------------------------------------------------------------
+
+# How often ElastAlert2 queries Elasticsearch for new data
+run_every:
+  seconds: 30
+
+# Size of the query window — how far back to look for events
+buffer_time:
+  minutes: 5
+
+# Elasticsearch index where ElastAlert2 stores its own metadata
+# (alert status, silenced alerts, errors, etc.)
+writeback_index: elastalert_status
+writeback_alias: elastalert_status_alias
+
+# Directory containing alert rule YAML files
+rules_folder: /opt/elastalert/rules
+
+# Limit query size to avoid overloading Elasticsearch
+max_query_size: 10000
+
+# Time to re-send an alert if it's still firing (prevents alert floods)
+realert:
+  minutes: 1
